@@ -666,7 +666,7 @@ class ActorCriticPolicy(BasePolicy):
         else:
             pi_features, vf_features = features
             latent_pi = self.mlp_extractor.forward_actor(pi_features, states)
-            latent_vf = self.mlp_extractor.forward_critic(vf_features, states)
+            latent_vf = self.mlp_extractor.forward_critic(vf_features)
         # Evaluate the values for the given observations
         values = self.value_net(latent_vf)
         distribution = self._get_action_dist_from_latent(latent_pi)
@@ -764,7 +764,7 @@ class ActorCriticPolicy(BasePolicy):
         else:
             pi_features, vf_features = features
             latent_pi = self.mlp_extractor.forward_actor(pi_features, states)
-            latent_vf = self.mlp_extractor.forward_critic(vf_features, states)
+            latent_vf = self.mlp_extractor.forward_critic(vf_features)
         distribution = self._get_action_dist_from_latent(latent_pi)
         log_prob = distribution.log_prob(actions)
         values = self.value_net(latent_vf)
