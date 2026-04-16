@@ -143,6 +143,7 @@ class BaseAlgorithm(ABC):
         self.learning_rate = learning_rate
         self.tensorboard_log = tensorboard_log
         self._last_obs = None  # type: np.ndarray | dict[str, np.ndarray] | None
+        self._last_state = None # type: Optional[Union[np.ndarray, Dict[str, np.ndarray]]]
         self._last_episode_starts = None  # type: np.ndarray | None
         # When using VecNormalize:
         self._last_original_obs = None  # type: np.ndarray | dict[str, np.ndarray] | None
@@ -284,7 +285,7 @@ class BaseAlgorithm(ABC):
         """
         self._current_progress_remaining = 1.0 - float(num_timesteps) / float(total_timesteps)
 
-    def _update_learning_rate(self, optimizers: list[th.optim.Optimizer] | th.optim.Optimizer) -> None:
+    def _update_learning_rate(self, optimizers: list[th.optim.Optimizer] | th.optim.Optimizer, learning_rate=None) -> None:
         """
         Update the optimizers learning rate using the current learning rate schedule
         and the current progress remaining (from 1 to 0).
@@ -293,12 +294,18 @@ class BaseAlgorithm(ABC):
             An optimizer or a list of optimizers.
         """
         # Log the current learning rate
-        self.logger.record("train/learning_rate", self.lr_schedule(self._current_progress_remaining))
+        if (learning_rate is None):
+            self.logger.record("train/learning_rate", self.lr_schedule(self._current_progress_remaining))
+        else:
+            self.logger.record("train/learning_rate", learning_rate)
 
         if not isinstance(optimizers, list):
             optimizers = [optimizers]
         for optimizer in optimizers:
-            update_learning_rate(optimizer, self.lr_schedule(self._current_progress_remaining))
+            if (learning_rate is None):
+                update_learning_rate(optimizer, self.lr_schedule(self._current_progress_remaining))
+            else:
+                update_learning_rate(optimizer, learning_rate)
 
     def _excluded_save_params(self) -> list[str]:
         """
@@ -310,9 +317,10 @@ class BaseAlgorithm(ABC):
         :return: List of parameters that should be excluded from being saved with pickle.
         """
         return [
-            "policy",
+            # "policy",
             "device",
             "env",
+            "eval_env",
             "replay_buffer",
             "rollout_buffer",
             "_vec_normalize_env",
@@ -420,7 +428,7 @@ class BaseAlgorithm(ABC):
         # Avoid resetting the environment when calling ``.learn()`` consecutive times
         if reset_num_timesteps or self._last_obs is None:
             assert self.env is not None
-            self._last_obs = self.env.reset()  # type: ignore[assignment]
+            self._last_obs, self._last_state = self.env.reset()  # pytype: disable=annotation-type-mismatch
             self._last_episode_starts = np.ones((self.env.num_envs,), dtype=bool)
             # Retrieve unnormalized observation for saving into the buffer
             if self._vec_normalize_env is not None:
@@ -504,6 +512,7 @@ class BaseAlgorithm(ABC):
         # See issue https://github.com/DLR-RM/stable-baselines3/issues/597
         if force_reset:
             self._last_obs = None
+            self._last_state = None
 
         self.n_envs = env.num_envs
         self.env = env

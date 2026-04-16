@@ -136,8 +136,8 @@ class DiagGaussianDistribution(Distribution):
     def __init__(self, action_dim: int):
         super().__init__()
         self.action_dim = action_dim
-
-    def proba_distribution_net(self, latent_dim: int, log_std_init: float = 0.0) -> tuple[nn.Module, nn.Parameter]:
+        
+    def proba_distribution_net(self, latent_dim: int, log_std_init: float, distr_identity: bool) -> tuple[nn.Module, nn.Parameter]:
         """
         Create the layers and parameter that represent the distribution:
         one output will be the mean of the Gaussian, the other parameter will be the
@@ -147,7 +147,12 @@ class DiagGaussianDistribution(Distribution):
         :param log_std_init: Initial value for the log standard deviation
         :return:
         """
-        mean_actions = nn.Linear(latent_dim, self.action_dim)
+
+        if distr_identity == False:
+            mean_actions = nn.Linear(latent_dim, self.action_dim)
+        else:
+            mean_actions = nn.Identity(latent_dim)
+
         # TODO: allow action dependent std
         log_std = nn.Parameter(th.ones(self.action_dim) * log_std_init, requires_grad=True)
         return mean_actions, log_std

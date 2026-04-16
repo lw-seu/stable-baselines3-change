@@ -33,6 +33,16 @@ from stable_baselines3.common.torch_layers import (
 from stable_baselines3.common.type_aliases import PyTorchObs, Schedule
 from stable_baselines3.common.utils import get_device, is_vectorized_observation, obs_as_tensor
 
+class PrintSlow:
+    def __init__(self, freq):
+        self.count = 0
+        self.freq = freq
+
+    def print(self, string):
+        self.count = self.count + 1
+        if (self.count % self.freq == 0):
+            print(string)
+
 SelfBaseModel = TypeVar("SelfBaseModel", bound="BaseModel")
 
 
@@ -331,6 +341,7 @@ class BasePolicy(BaseModel, ABC):
     def predict(
         self,
         observation: np.ndarray | dict[str, np.ndarray],
+        drone_state: np.ndarray,
         state: tuple[np.ndarray, ...] | None = None,
         episode_start: np.ndarray | None = None,
         deterministic: bool = False,
@@ -363,9 +374,11 @@ class BasePolicy(BaseModel, ABC):
             )
 
         obs_tensor, vectorized_env = self.obs_to_tensor(observation)
+        
+        drone_state_th = th.from_numpy(drone_state).float()
 
         with th.no_grad():
-            actions = self._predict(obs_tensor, deterministic=deterministic)
+            actions = self._predict(obs_tensor, drone_state_th, deterministic=deterministic)
         # Convert to numpy, and reshape to the original action shape
         actions = actions.cpu().numpy().reshape((-1, *self.action_space.shape))  # type: ignore[misc, assignment]
 
@@ -450,6 +463,7 @@ class ActorCriticPolicy(BasePolicy):
         observation_space: spaces.Space,
         action_space: spaces.Space,
         lr_schedule: Schedule,
+        distr_identity: bool,
         net_arch: list[int] | dict[str, list[int]] | None = None,
         activation_fn: type[nn.Module] = nn.Tanh,
         ortho_init: bool = True,
@@ -528,11 +542,15 @@ class ActorCriticPolicy(BasePolicy):
 
         self.use_sde = use_sde
         self.dist_kwargs = dist_kwargs
+        self.distr_identity = distr_identity
+
+        self.print_slow_1 = PrintSlow(100)
+        self.print_slow_2 = PrintSlow(100)
 
         # Action distribution
         self.action_dist = make_proba_distribution(action_space, use_sde=use_sde, dist_kwargs=dist_kwargs)
 
-        self._build(lr_schedule)
+        self._build(lr_schedule, distr_identity)
 
     def _get_constructor_parameters(self) -> dict[str, Any]:
         data = super()._get_constructor_parameters()
@@ -582,7 +600,7 @@ class ActorCriticPolicy(BasePolicy):
             device=self.device,
         )
 
-    def _build(self, lr_schedule: Schedule) -> None:
+    def _build(self, lr_schedule: Schedule, distr_identity: bool) -> None:
         """
         Create the networks and the optimizer.
 
@@ -595,7 +613,7 @@ class ActorCriticPolicy(BasePolicy):
 
         if isinstance(self.action_dist, DiagGaussianDistribution):
             self.action_net, self.log_std = self.action_dist.proba_distribution_net(
-                latent_dim=latent_dim_pi, log_std_init=self.log_std_init
+                latent_dim=latent_dim_pi, log_std_init=self.log_std_init, distr_identity=distr_identity
             )
         elif isinstance(self.action_dist, StateDependentNoiseDistribution):
             self.action_net, self.log_std = self.action_dist.proba_distribution_net(
@@ -633,7 +651,7 @@ class ActorCriticPolicy(BasePolicy):
         # Setup optimizer with initial learning rate
         self.optimizer = self.optimizer_class(self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)  # type: ignore[call-arg]
 
-    def forward(self, obs: th.Tensor, deterministic: bool = False) -> tuple[th.Tensor, th.Tensor, th.Tensor]:
+    def forward(self, obs: th.Tensor, states: th.Tensor, deterministic: bool = False) -> tuple[th.Tensor, th.Tensor, th.Tensor]:
         """
         Forward pass in all the networks (actor and critic)
 
@@ -644,11 +662,11 @@ class ActorCriticPolicy(BasePolicy):
         # Preprocess the observation if needed
         features = self.extract_features(obs)
         if self.share_features_extractor:
-            latent_pi, latent_vf = self.mlp_extractor(features)
+            latent_pi, latent_vf = self.mlp_extractor(features, states)
         else:
             pi_features, vf_features = features
-            latent_pi = self.mlp_extractor.forward_actor(pi_features)
-            latent_vf = self.mlp_extractor.forward_critic(vf_features)
+            latent_pi = self.mlp_extractor.forward_actor(pi_features, states)
+            latent_vf = self.mlp_extractor.forward_critic(vf_features, states)
         # Evaluate the values for the given observations
         values = self.value_net(latent_vf)
         distribution = self._get_action_dist_from_latent(latent_pi)
@@ -690,6 +708,17 @@ class ActorCriticPolicy(BasePolicy):
         """
         mean_actions = self.action_net(latent_pi)
 
+        if self.distr_identity:
+            self.print_slow_1.print("Using identity distribution")
+            assert(th.equal(mean_actions, latent_pi))
+            # print(mean_actions)
+            # print(latent_pi)
+            # print("===================================")
+        else:
+            self.print_slow_2.print("Not using identity distribution")
+            assert(not th.equal(mean_actions, latent_pi))
+
+
         if isinstance(self.action_dist, DiagGaussianDistribution):
             return self.action_dist.proba_distribution(mean_actions, self.log_std)
         elif isinstance(self.action_dist, CategoricalDistribution):
@@ -706,7 +735,7 @@ class ActorCriticPolicy(BasePolicy):
         else:
             raise ValueError("Invalid action distribution")
 
-    def _predict(self, observation: PyTorchObs, deterministic: bool = False) -> th.Tensor:
+    def _predict(self, observation: PyTorchObs, state: th.Tensor, deterministic: bool = False) -> th.Tensor:
         """
         Get the action according to the policy for a given observation.
 
@@ -714,9 +743,9 @@ class ActorCriticPolicy(BasePolicy):
         :param deterministic: Whether to use stochastic or deterministic actions
         :return: Taken action according to the policy
         """
-        return self.get_distribution(observation).get_actions(deterministic=deterministic)
+        return self.get_distribution(observation, state).get_actions(deterministic=deterministic)
 
-    def evaluate_actions(self, obs: PyTorchObs, actions: th.Tensor) -> tuple[th.Tensor, th.Tensor, th.Tensor | None]:
+    def evaluate_actions(self, obs: PyTorchObs, actions: th.Tensor, states: th.Tensor) -> tuple[th.Tensor, th.Tensor | None]:
         """
         Evaluate actions according to the current policy,
         given the observations.
@@ -729,18 +758,20 @@ class ActorCriticPolicy(BasePolicy):
         # Preprocess the observation if needed
         features = self.extract_features(obs)
         if self.share_features_extractor:
-            latent_pi, latent_vf = self.mlp_extractor(features)
+            latent_pi, latent_vf = self.mlp_extractor(features, states)
+            if (th.isnan(latent_pi).any()):
+                raise Exception("NaN error")
         else:
             pi_features, vf_features = features
-            latent_pi = self.mlp_extractor.forward_actor(pi_features)
-            latent_vf = self.mlp_extractor.forward_critic(vf_features)
+            latent_pi = self.mlp_extractor.forward_actor(pi_features, states)
+            latent_vf = self.mlp_extractor.forward_critic(vf_features, states)
         distribution = self._get_action_dist_from_latent(latent_pi)
         log_prob = distribution.log_prob(actions)
         values = self.value_net(latent_vf)
         entropy = distribution.entropy()
         return values, log_prob, entropy
 
-    def get_distribution(self, obs: PyTorchObs) -> Distribution:
+    def get_distribution(self, obs: PyTorchObs, state: th.Tensor) -> Distribution:
         """
         Get the current policy distribution given the observations.
 
@@ -748,7 +779,7 @@ class ActorCriticPolicy(BasePolicy):
         :return: the action distribution.
         """
         features = super().extract_features(obs, self.pi_features_extractor)
-        latent_pi = self.mlp_extractor.forward_actor(features)
+        latent_pi = self.mlp_extractor.forward_actor(features, state)
         return self._get_action_dist_from_latent(latent_pi)
 
     def predict_values(self, obs: PyTorchObs) -> th.Tensor:

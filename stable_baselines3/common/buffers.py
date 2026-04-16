@@ -44,6 +44,7 @@ class BaseBuffer(ABC):
         buffer_size: int,
         observation_space: spaces.Space,
         action_space: spaces.Space,
+        state_space: spaces.Space,
         device: th.device | str = "auto",
         n_envs: int = 1,
     ):
@@ -51,9 +52,11 @@ class BaseBuffer(ABC):
         self.buffer_size = buffer_size
         self.observation_space = observation_space
         self.action_space = action_space
+        self.state_space = state_space
         self.obs_shape = get_obs_shape(observation_space)  # type: ignore[assignment]
 
         self.action_dim = get_action_dim(action_space)
+        self.state_dim = 13
         self.pos = 0
         self.full = False
         self.device = get_device(device)
@@ -377,12 +380,13 @@ class RolloutBuffer(BaseBuffer):
         buffer_size: int,
         observation_space: spaces.Space,
         action_space: spaces.Space,
+        state_space: spaces.Space,
         device: th.device | str = "auto",
         gae_lambda: float = 1,
         gamma: float = 0.99,
         n_envs: int = 1,
     ):
-        super().__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs)
+        super().__init__(buffer_size, observation_space, action_space, state_space, device, n_envs=n_envs)
         self.gae_lambda = gae_lambda
         self.gamma = gamma
         self.generator_ready = False
@@ -391,6 +395,7 @@ class RolloutBuffer(BaseBuffer):
     def reset(self) -> None:
         self.observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=self.observation_space.dtype)
         self.actions = np.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=self.action_space.dtype)
+        self.states = np.zeros((self.buffer_size, self.n_envs, self.state_dim), dtype=np.float32)
         self.rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.episode_starts = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
@@ -441,6 +446,7 @@ class RolloutBuffer(BaseBuffer):
         self,
         obs: np.ndarray,
         action: np.ndarray,
+        state: np.ndarray,
         reward: np.ndarray,
         episode_start: np.ndarray,
         value: th.Tensor,
@@ -467,9 +473,11 @@ class RolloutBuffer(BaseBuffer):
 
         # Reshape to handle multi-dim and discrete action spaces, see GH #970 #1392
         action = action.reshape((self.n_envs, self.action_dim))
+        state = state.reshape((self.n_envs, self.state_dim))
 
         self.observations[self.pos] = np.array(obs)
         self.actions[self.pos] = np.array(action)
+        self.states[self.pos] = np.array(state).copy()
         self.rewards[self.pos] = np.array(reward)
         self.episode_starts[self.pos] = np.array(episode_start)
         self.values[self.pos] = value.clone().cpu().numpy().flatten()
@@ -486,6 +494,7 @@ class RolloutBuffer(BaseBuffer):
             _tensor_names = [
                 "observations",
                 "actions",
+                "states",
                 "values",
                 "log_probs",
                 "advantages",
@@ -514,6 +523,7 @@ class RolloutBuffer(BaseBuffer):
             self.observations[batch_inds],
             # Cast to float32 (backward compatible), this would lead to RuntimeError for MultiBinary space
             self.actions[batch_inds].astype(np.float32, copy=False),
+            self.states[batch_inds],
             self.values[batch_inds].flatten(),
             self.log_probs[batch_inds].flatten(),
             self.advantages[batch_inds].flatten(),
