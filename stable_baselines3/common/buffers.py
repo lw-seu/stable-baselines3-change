@@ -56,7 +56,7 @@ class BaseBuffer(ABC):
         self.obs_shape = get_obs_shape(observation_space)  # type: ignore[assignment]
 
         self.action_dim = get_action_dim(action_space)
-        self.state_dim = 13
+        self.state_dim = 20
         self.pos = 0
         self.full = False
         self.device = get_device(device)

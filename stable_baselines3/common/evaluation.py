@@ -86,16 +86,19 @@ def evaluate_policy(
     current_rewards = np.zeros(n_envs)
     current_lengths = np.zeros(n_envs, dtype="int")
     observations = env.reset()
+    drone_state = np.array([info["state"] for info in env.get_attr("reset_infos")])
     states = None
     episode_starts = np.ones((env.num_envs,), dtype=bool)
     while (episode_counts < episode_count_targets).any():
         actions, states = model.predict(
             observations,  # type: ignore[arg-type]
+            drone_state = drone_state,
             state=states,
             episode_start=episode_starts,
             deterministic=deterministic,
         )
         new_observations, rewards, dones, infos = env.step(actions)
+        new_drone_state = infos[0]["state"]
         current_rewards += rewards
         current_lengths += 1
         for i in range(n_envs):
@@ -130,6 +133,7 @@ def evaluate_policy(
                     current_lengths[i] = 0
 
         observations = new_observations
+        drone_state = new_drone_state
 
         if render:
             env.render()

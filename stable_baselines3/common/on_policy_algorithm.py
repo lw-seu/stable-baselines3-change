@@ -180,6 +180,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             collected, False if callback terminated rollout prematurely.
         """
         assert self._last_obs is not None, "No previous observation was provided"
+        assert self._last_state is not None, "No previous state was provided"
         # Switch to eval mode (this affects batch norm / dropout)
         self.policy.set_training_mode(False)
 
@@ -188,6 +189,9 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         # Sample new weights for the state dependent exploration
         if self.use_sde:
             self.policy.reset_noise(env.num_envs)
+            
+        # if self._last_state is None:
+        #     self._last_state = np.array([info["state"] for info in infos]) if "infos" in locals() else None
 
         callback.on_rollout_start()
 
@@ -199,7 +203,9 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             with th.no_grad():
                 # Convert to pytorch tensor or to TensorDict
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)  # type: ignore[arg-type]
-                actions, values, log_probs = self.policy(obs_tensor)
+                state_tensor = obs_as_tensor(self._last_state, self.device)
+                actions, values, log_probs = self.policy(obs_tensor, state_tensor)
+                
             actions = actions.cpu().numpy()
 
             # Rescale and perform action
@@ -216,6 +222,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                     clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
 
             new_obs, rewards, dones, infos = env.step(clipped_actions)
+            new_states = np.array([info["state"] for info in infos])
 
             self.num_timesteps += env.num_envs
 
@@ -245,18 +252,23 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                     rewards[idx] += self.gamma * terminal_value
 
             rollout_buffer.add(
-                self._last_obs,  # type: ignore[arg-type]
+                self._last_obs,  # type: ignore[arg-type] 
                 actions,
+                self._last_state, 
                 rewards,
                 self._last_episode_starts,  # type: ignore[arg-type]
                 values,
                 log_probs,
             )
             self._last_obs = new_obs  # type: ignore[assignment]
+            self._last_state = new_states
             self._last_episode_starts = dones
 
         with th.no_grad():
             # Compute value for the last timestep
+            obs_tensor = obs_as_tensor(new_obs, self.device)
+            state_tensor = obs_as_tensor(new_states, self.device)
+
             values = self.policy.predict_values(obs_as_tensor(new_obs, self.device))  # type: ignore[arg-type]
 
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)

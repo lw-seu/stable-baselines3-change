@@ -428,7 +428,9 @@ class BaseAlgorithm(ABC):
         # Avoid resetting the environment when calling ``.learn()`` consecutive times
         if reset_num_timesteps or self._last_obs is None:
             assert self.env is not None
-            self._last_obs, self._last_state = self.env.reset()  # pytype: disable=annotation-type-mismatch
+            # self._last_obs, self._last_state = self.env.reset()  # pytype: disable=annotation-type-mismatch
+            self._last_obs = self.env.reset()  # 获取 obs
+            self._last_state = np.array([info["state"] for info in self.env.get_attr("reset_infos")])
             self._last_episode_starts = np.ones((self.env.num_envs,), dtype=bool)
             # Retrieve unnormalized observation for saving into the buffer
             if self._vec_normalize_env is not None:
@@ -546,6 +548,7 @@ class BaseAlgorithm(ABC):
     def predict(
         self,
         observation: np.ndarray | dict[str, np.ndarray],
+        drone_state: np.ndarray,
         state: tuple[np.ndarray, ...] | None = None,
         episode_start: np.ndarray | None = None,
         deterministic: bool = False,
@@ -555,6 +558,7 @@ class BaseAlgorithm(ABC):
         Includes sugar-coating to handle different observations (e.g. normalizing images).
 
         :param observation: the input observation
+        :param drone_state: the input drone state
         :param state: The last hidden states (can be None, used in recurrent policies)
         :param episode_start: The last masks (can be None, used in recurrent policies)
             this correspond to beginning of episodes,
@@ -563,7 +567,7 @@ class BaseAlgorithm(ABC):
         :return: the model's action and the next hidden state
             (used in recurrent policies)
         """
-        return self.policy.predict(observation, state, episode_start, deterministic)
+        return self.policy.predict(observation, drone_state, state, episode_start, deterministic)
 
     def set_random_seed(self, seed: int | None = None) -> None:
         """
